@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -236,92 +236,11 @@ namespace socks5
             return client;
         }
 
-        private static async Task<byte[]> ReadInternalAsync(this NetworkStream stream, long length, CancellationToken cancellationToken)
-        {
-            await using var memoryStream = new MemoryStream();
-
-            await stream.ReadInternalAsync(length, memoryStream, (c) => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
-            return memoryStream.ToArray();
-        }
-
-        private static async Task ReadInternalAsync(this NetworkStream stream, long length, Stream outputStream, Func<CancellationToken, Task> governor, CancellationToken cancellationToken)
-        {
-            var buffer = new byte[4096];
-            long totalBytesRead = 0;
-
-            try
-            {
-                while (totalBytesRead < length)
+        private static async Task<byte[]> ReadAsync(this NetworkStream stream, int length, CancellationToken cancellationToken)
                 {
-                    await governor(cancellationToken).ConfigureAwait(false);
-
-                    var bytesRemaining = length - totalBytesRead;
-                    var bytesToRead = bytesRemaining >= buffer.Length ? buffer.Length : (int)bytesRemaining; // cast to int is safe because of the check against buffer length.
-
-                    var bytesRead = await stream.ReadAsync(buffer, 0, bytesToRead, cancellationToken).ConfigureAwait(false);
-
-                    if (bytesRead == 0)
-                    {
-                        throw new Exception("Remote connection closed");
-                    }
-
-                    totalBytesRead += bytesRead;
-
-                    await outputStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
-                }
-
-                await outputStream.FlushAsync(cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                if (ex is TimeoutException || ex is OperationCanceledException)
-                {
-                    throw;
-                }
-
-                throw new Exception($"Failed to read {length} bytes from: {ex.Message}", ex);
-            }
-        }
-
-        private static async Task WriteInternalAsync(this NetworkStream stream, byte[] bytes, CancellationToken cancellationToken)
-        {
-            await using var memoryStream = new MemoryStream(bytes);
-
-            await stream.WriteInternalAsync(bytes.Length, memoryStream, (c) => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
-        }
-
-        private static async Task WriteInternalAsync(this NetworkStream stream, long length, Stream inputStream, Func<CancellationToken, Task> governor, CancellationToken cancellationToken)
-        {
-            var inputBuffer = new byte[4096];
-            var totalBytesWritten = 0;
-
-            try
-            {
-                while (totalBytesWritten < length)
-                {
-                    await governor(cancellationToken).ConfigureAwait(false);
-
-                    var bytesRemaining = length - totalBytesWritten;
-
-                    var bytesToRead = bytesRemaining >= inputBuffer.Length ? inputBuffer.Length : (int)bytesRemaining;
-                    var bytesRead = await inputStream.ReadAsync(inputBuffer.AsMemory(0, bytesToRead), cancellationToken).ConfigureAwait(false);
-
-                    Console.WriteLine($"Writing {bytesRead} bytes");
-                    Console.WriteLine($"{BitConverter.ToString(inputBuffer.Take(bytesRead).ToArray())}");
-                    await stream.WriteAsync(inputBuffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
-
-                    totalBytesWritten += bytesRead;
-                }
-            }
-            catch (Exception ex)
-            {
-                if (ex is TimeoutException || ex is OperationCanceledException)
-                {
-                    throw;
-                }
-
-                throw new Exception($"Failed to write {length} bytes to: {ex.Message}", ex);
-            }
+            var buffer = new byte[1024];
+            var bytesRead = await stream.ReadAsync(buffer, 0, length, cancellationToken).ConfigureAwait(false);
+            return buffer.AsSpan<byte>().Slice(0, bytesRead).ToArray();
         }
     }
 }
