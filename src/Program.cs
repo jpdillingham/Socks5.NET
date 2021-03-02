@@ -1,11 +1,10 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Linq;
 
 namespace socks5
 {
@@ -21,32 +20,28 @@ namespace socks5
                 proxyAddress: "3.239.96.8",
                 proxyPort: 1080,
                 destinationAddress: domain,
-                destinationPort: 80);
+                destinationPort: 80,
+                "foo", "bar");
 
             using var stream = client.GetStream();                
-            var writer = new StreamWriter(stream);
-                    
-            writer.Write($"GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n");
+            
+            Console.WriteLine($"Writing web request");
+            var req = Encoding.ASCII.GetBytes($"GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n");
+            await stream.WriteAsync(req, CancellationToken.None);
 
             using var reader = new StreamReader(stream);
-                var i = 0;
                         
             while (true)
             {
-
                 var line = reader.ReadLine();
-                if (string.IsNullOrEmpty(line))
+                
+                if (line == null)
                 {
-                    i++;
-                    Console.WriteLine(i); 
-
-                    if (i > 3) {
-                        break;  
-                    }
+                    break;
                 }
 
                 Console.WriteLine(line);
-            }   
+            }
         }
 
         public static async Task<TcpClient> ProxyConnectAsync(
@@ -76,51 +71,39 @@ namespace socks5
             await client.ConnectAsync(proxyAddress, proxyPort, cancellationToken.Value);
             var stream = client.GetStream();
 
-            // RFC 1928
-            // negotiate authentication
+            // The client connects to the server, and sends a version identifier/method selection message:
             // +-----+----------+----------+
             // | VER | NMETHODS | METHODS  |
             // +-----+----------+----------+
             // | 1   | 1        | 1 to 255 |
             // +-----+----------+----------+
-            var auth = new byte[4];
-            auth[0] = 0x05; // Version
-            auth[1] = 0x01; // 1 methods
+            var auth = new byte[] { SOCKS_5, 0x01, AUTH_ANONYMOUS };
 
             if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password))
             {
-                auth[2] = 0x02; // username and password
+                auth = new byte[] { SOCKS_5, 0x02, AUTH_ANONYMOUS, AUTH_USERNAMEPASSWORD };
             }
-            else
-            {
-                auth[2] = 0x00; // No auth-method
-            }
+            
+            await stream.WriteAsync(auth, CancellationToken.None);
 
-            Console.WriteLine($"Sending auth handshake");
-            await stream.WriteInternalAsync(auth, CancellationToken.None);
-
-            // read the auth response
+            // The server selects from one of the methods given in METHODS, and sends a METHOD selection message:
             // +-----+-------+
             // | VER | CAUTH |
             // +-----+-------+
             // | 1   | 1     |
             // +-----+-------+
-            Console.WriteLine($"Reading auth response");
-            var authResponse = await stream.ReadInternalAsync(2, CancellationToken.None);
+            var authResponse = await stream.ReadAsync(2, CancellationToken.None);
 
-            if (authResponse[0] != 0x05)
+            if (authResponse[0] != SOCKS_5)
             {
-                // ensure the server responds with the expected version (5)
                 throw new IOException("Invalid Socks Version");
             }
 
             switch (authResponse[1])
             {
-                case 0x00:
-                    Console.WriteLine($"Server selected no-auth");
+                case AUTH_ANONYMOUS:
                     break;
-                case 0x02:
-                    Console.WriteLine($"Server selected username/password");
+                case AUTH_USERNAMEPASSWORD:
                     // RFC 1929
                     // +-----+------+----------+------+----------+
                     // | VER | ULEN | UNAME    | PLEN | PASSWD   |
@@ -140,65 +123,50 @@ namespace socks5
 
                     break;
                 case 0xff:
-                    Console.WriteLine($"No acceptable auth methods");
-                    break;
+                    throw new Exception($"No acceptable auth methods");
                 default:
                     throw new Exception($"Unknown CAUTH response from server: {authResponse[1]}");
             }
 
-            // Request the downstream connection
+            // The SOCKS request is formed as follows:
             // +----+-----+-------+------+----------+----------+
             // |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
             // +----+-----+-------+------+----------+----------+
             // | 1  |  1  | X'00' |  1   | Variable |    2     |
             // +----+-----+-------+------+----------+----------+
-            // var domainBytes = Encoding.ASCII.GetBytes(destinationAddress);
-            // var portBytes = BitConverter.GetBytes(IPAddress.HostToNetworkOrder((short)destinationPort));
+            var domainBytes = Encoding.ASCII.GetBytes(destinationAddress);
+            var portBytes = BitConverter.GetBytes(IPAddress.HostToNetworkOrder((short)destinationPort));
 
-            // var connectionRequest = new byte[7 + destinationAddress.Length];
-            // connectionRequest[0] = 0x05; // Version
-            // connectionRequest[1] = 0x01; // Connect (TCP)
-            // connectionRequest[2] = 0x00; // Reserved
-            // connectionRequest[3] = 0x03; // Dest.Addr: Domain name
-            // connectionRequest[4] = (byte)destinationAddress.Length; // Domain name length (octet)
+            var connection = new byte[7 + destinationAddress.Length];
+            connection[0] = 0x05; // Version
+            connection[1] = 0x01; // Connect (TCP)
+            connection[2] = 0x00; // Reserved
+            connection[3] = 0x03; // Dest.Addr: Domain name
+            connection[4] = (byte)destinationAddress.Length; // Domain name length (octet)
 
-            // Array.Copy(domainBytes, 0, connectionRequest, 5, destinationAddress.Length); // DST.ADDR
+            Array.Copy(domainBytes, 0, connection, 5, destinationAddress.Length); // DST.ADDR
 
-            // connectionRequest[5 + destinationAddress.Length] = portBytes[0]; // DST.PORT[0]
-            // connectionRequest[6 + destinationAddress.Length] = portBytes[1]; // DST.PORT[1]
-            var buf = new byte[300];
+            connection[5 + destinationAddress.Length] = portBytes[0]; // DST.PORT[0]
+            connection[6 + destinationAddress.Length] = portBytes[1]; // DST.PORT[1]
 
-            buf[0] = 0x05; // Version
-            buf[1] = 0x01; // Connect (TCP)
-            buf[2] = 0x00; // Reserved
-            buf[3] = 0x03; // Dest.Addr: Domain name
-            var domain = Encoding.ASCII.GetBytes("google.com");
-            buf[4] = (byte)domain.Length; // Domain name length (octet)
-            Array.Copy(domain, 0, buf, 5, domain.Length);
-            var port = BitConverter.GetBytes(
-                IPAddress.HostToNetworkOrder((short)80));
-            buf[5 + domain.Length] = port[0];
-            buf[6 + domain.Length] = port[1];
-            
-            Console.WriteLine($"Sending connection request");
-            stream.Write(buf, 0, domain.Length + 7);
+            await stream.WriteAsync(connection);
 
-            //await stream.WriteInternalAsync(connectionRequest, CancellationToken.None);
-
-            // read the connection response
+            // The SOCKS request information is sent by the client as soon as it has
+            // established a connection to the SOCKS server, and completed the
+            // authentication negotiations.  The server evaluates the request, and
+            // returns a reply formed as follows:
             // +-----+-----+-------+------+----------+----------+
             // | VER | REP | RSV   | ATYP | BND.ADDR | BND.PORT |
             // +-----+-----+-------+------+----------+----------+
             // | 1   | 1   | X'00' | 1    | Variable | 2        |
             // +-----+-----+-------+------+----------+----------+
-            Console.WriteLine($"Reading connection response");
-            var connectionResponse = await stream.ReadInternalAsync(4, CancellationToken.None);
+            var connectionResponse = await stream.ReadAsync(4, CancellationToken.None);
 
-            if (connectionResponse[0] != 0x05) // VER/version
+            if (connectionResponse[0] != SOCKS_5)
             {
                 throw new IOException("Invalid Socks Version");
             }
-            if (connectionResponse[1] != 0x00) // REP/reply
+            if (connectionResponse[1] != EMPTY)
             {
                 string msg = (connectionResponse[1]) switch
                 {
@@ -219,32 +187,32 @@ namespace socks5
             string boundAddress;
             ushort boundPort;
 
-            switch (connectionResponse[3]) // ATYP/address type
+            switch (connectionResponse[3])
             {
-                case 0x01: // IPv4
-                    var boundIPBytes = await stream.ReadInternalAsync(4, CancellationToken.None);
+                case IPV4: // IPv4
+                    var boundIPBytes = await stream.ReadAsync(4, CancellationToken.None);
                     boundAddress = new IPAddress(BitConverter.ToUInt32(boundIPBytes, 0)).ToString();
                     break;
-                case 0x03: // Domain name
-                    var lengthBytes = await stream.ReadInternalAsync(1, CancellationToken.None);
+                case DOMAIN: // Domain name
+                    var lengthBytes = await stream.ReadAsync(1, CancellationToken.None);
 
-                    if (lengthBytes[0] == 0xff)
+                    if (lengthBytes[0] == ERROR)
                     {
                         throw new IOException("Invalid Domain Name");
                     }
 
-                    var boundDomainBytes = await stream.ReadInternalAsync(lengthBytes[0], CancellationToken.None);
+                    var boundDomainBytes = await stream.ReadAsync(lengthBytes[0], CancellationToken.None);
                     boundAddress = Encoding.ASCII.GetString(boundDomainBytes);
                     break;
-                case 0x04: // IPv6
-                    var boundIPv6Bytes = await stream.ReadInternalAsync(16, CancellationToken.None);
+                case IPV6: // IPv6
+                    var boundIPv6Bytes = await stream.ReadAsync(16, CancellationToken.None);
                     boundAddress = new IPAddress(boundIPv6Bytes).ToString();
                     break;
                 default:
                     throw new IOException("Unknown SOCKS Address type");
             }
 
-            var boundPortBytes = await stream.ReadInternalAsync(2, CancellationToken.None);
+            var boundPortBytes = await stream.ReadAsync(2, CancellationToken.None);
             boundPort = (ushort)IPAddress.NetworkToHostOrder((short)BitConverter.ToUInt16(boundPortBytes, 0));
 
             Console.WriteLine($"SOCKS proxy successfully bound to {destinationAddress}:{destinationPort} via {boundAddress}:{boundPort}");
@@ -252,7 +220,7 @@ namespace socks5
         }
 
         private static async Task<byte[]> ReadAsync(this NetworkStream stream, int length, CancellationToken cancellationToken)
-                {
+        {
             var buffer = new byte[1024];
             var bytesRead = await stream.ReadAsync(buffer, 0, length, cancellationToken).ConfigureAwait(false);
             return buffer.AsSpan<byte>().Slice(0, bytesRead).ToArray();
