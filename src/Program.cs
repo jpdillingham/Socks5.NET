@@ -59,6 +59,18 @@ namespace socks5
             string password = null,
             CancellationToken? cancellationToken = null)
         {
+            const byte SOCKS_5 = 0x05;
+            
+            const byte AUTH_ANONYMOUS = 0x00;
+            const byte AUTH_USERNAMEPASSWORD = 0x02;
+
+            const byte IPV4 = 0x01;
+            const byte DOMAIN = 0x03;
+            const byte IPV6 = 0x04;
+
+            const byte ERROR = 0xFF;
+            const byte EMPTY = 0x00;
+
             cancellationToken ??= CancellationToken.None;
 
             await client.ConnectAsync(proxyAddress, proxyPort, cancellationToken.Value);
