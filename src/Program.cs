@@ -56,9 +56,12 @@ namespace socks5
             string destinationAddress,
             int destinationPort,
             string username = null,
-            string password = null)
+            string password = null,
+            CancellationToken? cancellationToken = null)
         {
-            await client.ConnectAsync(proxyAddress, proxyPort);
+            cancellationToken ??= CancellationToken.None;
+
+            await client.ConnectAsync(proxyAddress, proxyPort, cancellationToken.Value);
             var stream = client.GetStream();
 
             // RFC 1928
