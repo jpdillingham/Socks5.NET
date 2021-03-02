@@ -5,12 +5,13 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 
 namespace socks5
 {
     static class Program
     {
-        private static readonly string domain = "whatnet.us";   
+        private static readonly string domain = "google.com";   
 
         static async Task Main(string[] args)
         {
@@ -136,23 +137,38 @@ namespace socks5
             // +----+-----+-------+------+----------+----------+
             // | 1  |  1  | X'00' |  1   | Variable |    2     |
             // +----+-----+-------+------+----------+----------+
-            var domainBytes = Encoding.ASCII.GetBytes(destinationAddress);
-            var portBytes = BitConverter.GetBytes(IPAddress.HostToNetworkOrder((short)destinationPort));
+            // var domainBytes = Encoding.ASCII.GetBytes(destinationAddress);
+            // var portBytes = BitConverter.GetBytes(IPAddress.HostToNetworkOrder((short)destinationPort));
 
-            var connectionRequest = new byte[7 + domainBytes.Length];
-            connectionRequest[0] = 0x05; // Version
-            connectionRequest[1] = 0x01; // Connect (TCP)
-            connectionRequest[2] = 0x00; // Reserved
-            connectionRequest[3] = 0x03; // Dest.Addr: Domain name
-            connectionRequest[4] = (byte)destinationAddress.Length; // Domain name length (octet)
+            // var connectionRequest = new byte[7 + destinationAddress.Length];
+            // connectionRequest[0] = 0x05; // Version
+            // connectionRequest[1] = 0x01; // Connect (TCP)
+            // connectionRequest[2] = 0x00; // Reserved
+            // connectionRequest[3] = 0x03; // Dest.Addr: Domain name
+            // connectionRequest[4] = (byte)destinationAddress.Length; // Domain name length (octet)
 
-            Array.Copy(domainBytes, 0, connectionRequest, 5, destinationAddress.Length); // DST.ADDR
+            // Array.Copy(domainBytes, 0, connectionRequest, 5, destinationAddress.Length); // DST.ADDR
 
-            connectionRequest[5 + destinationAddress.Length] = portBytes[0]; // DST.PORT[0]
-            connectionRequest[6 + destinationAddress.Length] = portBytes[1]; // DST.PORT[1]
+            // connectionRequest[5 + destinationAddress.Length] = portBytes[0]; // DST.PORT[0]
+            // connectionRequest[6 + destinationAddress.Length] = portBytes[1]; // DST.PORT[1]
+            var buf = new byte[300];
 
+            buf[0] = 0x05; // Version
+            buf[1] = 0x01; // Connect (TCP)
+            buf[2] = 0x00; // Reserved
+            buf[3] = 0x03; // Dest.Addr: Domain name
+            var domain = Encoding.ASCII.GetBytes("google.com");
+            buf[4] = (byte)domain.Length; // Domain name length (octet)
+            Array.Copy(domain, 0, buf, 5, domain.Length);
+            var port = BitConverter.GetBytes(
+                IPAddress.HostToNetworkOrder((short)80));
+            buf[5 + domain.Length] = port[0];
+            buf[6 + domain.Length] = port[1];
+            
             Console.WriteLine($"Sending connection request");
-            await stream.WriteInternalAsync(connectionRequest, CancellationToken.None);
+            stream.Write(buf, 0, domain.Length + 7);
+
+            //await stream.WriteInternalAsync(connectionRequest, CancellationToken.None);
 
             // read the connection response
             // +-----+-----+-------+------+----------+----------+
@@ -290,6 +306,8 @@ namespace socks5
                     var bytesToRead = bytesRemaining >= inputBuffer.Length ? inputBuffer.Length : (int)bytesRemaining;
                     var bytesRead = await inputStream.ReadAsync(inputBuffer.AsMemory(0, bytesToRead), cancellationToken).ConfigureAwait(false);
 
+                    Console.WriteLine($"Writing {bytesRead} bytes");
+                    Console.WriteLine($"{BitConverter.ToString(inputBuffer.Take(bytesRead).ToArray())}");
                     await stream.WriteAsync(inputBuffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
 
                     totalBytesWritten += bytesRead;
