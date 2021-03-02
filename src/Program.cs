@@ -10,42 +10,42 @@ namespace socks5
 {
     static class Program
     {
-        static NetworkStream Stream { get; set; }
+        private static readonly string domain = "whatnet.us";   
 
         static async Task Main(string[] args)
         {
-            using (var client = new TcpClient())
+            using var client = new TcpClient();
+            
+            await client.ProxyConnectAsync(
+                proxyAddress: "3.239.96.8",
+                proxyPort: 1080,
+                destinationAddress: domain,
+                destinationPort: 80);
+
+            using var stream = client.GetStream();                
+            var writer = new StreamWriter(stream);
+                    
+            writer.Write($"GET / HTTP/1.1\r\nHost: {domain}\r\n\r\n");
+
+            using var reader = new StreamReader(stream);
+                var i = 0;
+                        
+            while (true)
             {
-                await client.ProxyConnectAsync(
-                    proxyAddress: "165.22.17.140",
-                    proxyPort: 33080,
-                    destinationAddress: "whatnet.us",
-                    destinationPort: 80);
 
-                using (var stream = client.GetStream())
+                var line = reader.ReadLine();
+                if (string.IsNullOrEmpty(line))
                 {
-                    // Make an HTTP request, aka. "do stuff ..."
-                    using (var writer = new StreamWriter(stream))
-                    {
-                        writer.Write("GET / HTTP/1.1\r\nHost: whatnet.us\r\n\r\n");
-                        writer.Flush();
+                    i++;
+                    Console.WriteLine(i); 
 
-                        using (var reader = new StreamReader(stream))
-                        {
-                            while (true)
-                            {
-                                var line = reader.ReadLine();
-                                if (string.IsNullOrEmpty(line))
-                                {
-                                    break;
-                                }
-
-                                Console.WriteLine(line);
-                            }
-                        }
+                    if (i > 3) {
+                        break;  
                     }
                 }
-            }
+
+                Console.WriteLine(line);
+            }   
         }
 
         public static async Task<TcpClient> ProxyConnectAsync(
@@ -58,7 +58,7 @@ namespace socks5
             string password = null)
         {
             await client.ConnectAsync(proxyAddress, proxyPort);
-            Stream = client.GetStream();
+            var stream = client.GetStream();
 
             // RFC 1928
             // negotiate authentication
@@ -81,7 +81,7 @@ namespace socks5
             }
 
             Console.WriteLine($"Sending auth handshake");
-            await WriteInternalAsync(auth, CancellationToken.None);
+            await stream.WriteInternalAsync(auth, CancellationToken.None);
 
             // read the auth response
             // +-----+-------+
@@ -90,7 +90,7 @@ namespace socks5
             // | 1   | 1     |
             // +-----+-------+
             Console.WriteLine($"Reading auth response");
-            var authResponse = await ReadInternalAsync(2, CancellationToken.None);
+            var authResponse = await stream.ReadInternalAsync(2, CancellationToken.None);
 
             if (authResponse[0] != 0x05)
             {
@@ -152,7 +152,7 @@ namespace socks5
             connectionRequest[6 + destinationAddress.Length] = portBytes[1]; // DST.PORT[1]
 
             Console.WriteLine($"Sending connection request");
-            await WriteInternalAsync(connectionRequest, CancellationToken.None);
+            await stream.WriteInternalAsync(connectionRequest, CancellationToken.None);
 
             // read the connection response
             // +-----+-----+-------+------+----------+----------+
@@ -161,7 +161,7 @@ namespace socks5
             // | 1   | 1   | X'00' | 1    | Variable | 2        |
             // +-----+-----+-------+------+----------+----------+
             Console.WriteLine($"Reading connection response");
-            var connectionResponse = await ReadInternalAsync(4, CancellationToken.None);
+            var connectionResponse = await stream.ReadInternalAsync(4, CancellationToken.None);
 
             if (connectionResponse[0] != 0x05) // VER/version
             {
@@ -191,44 +191,44 @@ namespace socks5
             switch (connectionResponse[3]) // ATYP/address type
             {
                 case 0x01: // IPv4
-                    var boundIPBytes = await ReadInternalAsync(4, CancellationToken.None);
+                    var boundIPBytes = await stream.ReadInternalAsync(4, CancellationToken.None);
                     boundAddress = new IPAddress(BitConverter.ToUInt32(boundIPBytes, 0)).ToString();
                     break;
                 case 0x03: // Domain name
-                    var lengthBytes = await ReadInternalAsync(1, CancellationToken.None);
+                    var lengthBytes = await stream.ReadInternalAsync(1, CancellationToken.None);
 
                     if (lengthBytes[0] == 0xff)
                     {
                         throw new IOException("Invalid Domain Name");
                     }
 
-                    var boundDomainBytes = await ReadInternalAsync(lengthBytes[0], CancellationToken.None);
+                    var boundDomainBytes = await stream.ReadInternalAsync(lengthBytes[0], CancellationToken.None);
                     boundAddress = Encoding.ASCII.GetString(boundDomainBytes);
                     break;
                 case 0x04: // IPv6
-                    var boundIPv6Bytes = await ReadInternalAsync(16, CancellationToken.None);
+                    var boundIPv6Bytes = await stream.ReadInternalAsync(16, CancellationToken.None);
                     boundAddress = new IPAddress(boundIPv6Bytes).ToString();
                     break;
                 default:
                     throw new IOException("Unknown SOCKS Address type");
             }
 
-            var boundPortBytes = await ReadInternalAsync(2, CancellationToken.None);
+            var boundPortBytes = await stream.ReadInternalAsync(2, CancellationToken.None);
             boundPort = (ushort)IPAddress.NetworkToHostOrder((short)BitConverter.ToUInt16(boundPortBytes, 0));
 
             Console.WriteLine($"SOCKS proxy successfully bound to {destinationAddress}:{destinationPort} via {boundAddress}:{boundPort}");
             return client;
         }
 
-        private static async Task<byte[]> ReadInternalAsync(long length, CancellationToken cancellationToken)
+        private static async Task<byte[]> ReadInternalAsync(this NetworkStream stream, long length, CancellationToken cancellationToken)
         {
-            await using var stream = new MemoryStream();
+            await using var memoryStream = new MemoryStream();
 
-            await ReadInternalAsync(length, stream, (c) => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
-            return stream.ToArray();
+            await stream.ReadInternalAsync(length, memoryStream, (c) => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
+            return memoryStream.ToArray();
         }
 
-        private static async Task ReadInternalAsync(long length, Stream outputStream, Func<CancellationToken, Task> governor, CancellationToken cancellationToken)
+        private static async Task ReadInternalAsync(this NetworkStream stream, long length, Stream outputStream, Func<CancellationToken, Task> governor, CancellationToken cancellationToken)
         {
             var buffer = new byte[4096];
             long totalBytesRead = 0;
@@ -242,7 +242,7 @@ namespace socks5
                     var bytesRemaining = length - totalBytesRead;
                     var bytesToRead = bytesRemaining >= buffer.Length ? buffer.Length : (int)bytesRemaining; // cast to int is safe because of the check against buffer length.
 
-                    var bytesRead = await Stream.ReadAsync(buffer, 0, bytesToRead, cancellationToken).ConfigureAwait(false);
+                    var bytesRead = await stream.ReadAsync(buffer, 0, bytesToRead, cancellationToken).ConfigureAwait(false);
 
                     if (bytesRead == 0)
                     {
@@ -267,14 +267,14 @@ namespace socks5
             }
         }
 
-        private static async Task WriteInternalAsync(byte[] bytes, CancellationToken cancellationToken)
+        private static async Task WriteInternalAsync(this NetworkStream stream, byte[] bytes, CancellationToken cancellationToken)
         {
-            await using var stream = new MemoryStream(bytes);
+            await using var memoryStream = new MemoryStream(bytes);
 
-            await WriteInternalAsync(bytes.Length, stream, (c) => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
+            await stream.WriteInternalAsync(bytes.Length, memoryStream, (c) => Task.CompletedTask, cancellationToken).ConfigureAwait(false);
         }
 
-        private static async Task WriteInternalAsync(long length, Stream inputStream, Func<CancellationToken, Task> governor, CancellationToken cancellationToken)
+        private static async Task WriteInternalAsync(this NetworkStream stream, long length, Stream inputStream, Func<CancellationToken, Task> governor, CancellationToken cancellationToken)
         {
             var inputBuffer = new byte[4096];
             var totalBytesWritten = 0;
@@ -290,7 +290,7 @@ namespace socks5
                     var bytesToRead = bytesRemaining >= inputBuffer.Length ? inputBuffer.Length : (int)bytesRemaining;
                     var bytesRead = await inputStream.ReadAsync(inputBuffer.AsMemory(0, bytesToRead), cancellationToken).ConfigureAwait(false);
 
-                    await Stream.WriteAsync(inputBuffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
+                    await stream.WriteAsync(inputBuffer, 0, bytesRead, cancellationToken).ConfigureAwait(false);
 
                     totalBytesWritten += bytesRead;
                 }
