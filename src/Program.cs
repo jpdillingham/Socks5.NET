@@ -77,7 +77,7 @@ namespace Socks5
 
             if (username == default != (password == default))
             {
-                throw new ArgumentException("Username and password are mutually exclusive; supply both or neither");
+                throw new ArgumentException("Username and password must agree; supply both or neither");
             }
 
             if (username != default && username.Length > 255)
